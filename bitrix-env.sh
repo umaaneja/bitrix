@@ -472,23 +472,6 @@ configure_bitrix() {
 
     REPOF=/etc/yum.repos.d/bitrix.repo
 
-    # Create the repo file
-    {
-        echo "[$REPONAME]"
-        echo "name=\$OS \$releasever - \$basearch"
-        echo "failovermethod=priority"
-        echo "baseurl=https://repo.bitrix.info/$REPO/el/7/\$basearch"
-        echo "enabled=1"
-        echo "gpgcheck=1"
-        echo "gpgkey=$GPGK"
-    } > "$REPOF"
-
-    # Verify the repo file was created successfully
-    if [[ $? -ne 0 ]]; then
-        print_e "Failed to create repo file $REPOF"
-        return 1
-    fi
-
     print "$MBE0041" 1
 }
 
