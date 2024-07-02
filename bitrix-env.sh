@@ -745,22 +745,24 @@ yum_update
 
 print "$MBE0076" 1
 
-# Install PHP and related packages
-yum -y install php php-mysql php-pecl-apcu php-pecl-zendopcache >> "$LOGS_FILE" 2>&1 || \
+
+dnf -y install php php-mysqlnd php-pecl-apcu php-opcache >> "$LOGS_FILE" 2>&1 || \
     { print_e "$MBE0079 php-packages"; exit 1; }
+
+
 
 # Install additional packages if BX_PACKAGE is "bitrix-env-crm"
 if [[ $BX_PACKAGE == "bitrix-env-crm" ]]; then
     print "$MBE0078" 1
-    yum -y install redis >> "$LOGS_FILE" 2>&1 || \
+    dnf -y install redis >> "$LOGS_FILE" 2>&1 || \
         { print_e "$MBE0079 redis"; exit 1; }
-    yum -y install bx-push-server >> "$LOGS_FILE" 2>&1 || \
+    dnf -y install bx-push-server >> "$LOGS_FILE" 2>&1 || \
         { print_e "$MBE0079 bx-push-server"; exit 1; }
 fi
 
 # Install the main BX_PACKAGE
 print "$MBE0077" 1
-yum -y install $BX_PACKAGE >> "$LOGS_FILE" 2>&1 || \
+dnf -y install $BX_PACKAGE >> "$LOGS_FILE" 2>&1 || \
     { print_e "$MBE0079 $BX_PACKAGE"; exit 1; }
 
 # Source bitrix_utils.sh script
