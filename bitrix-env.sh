@@ -462,13 +462,14 @@ configure_bitrix_old() {
     print "$MBE0041" 1
 }
 
-
-
 yum_update() {
   print "$MBE0042" 1
-  dnf upgrade -y >>"$LOGS_FILE" 2>&1 || \
+  dnf upgrade --refresh -y >>"$LOGS_FILE" 2>&1 || \
     print_e "$MBE0043"
 }
+
+
+
 
 ask_for_password() {
     MYSQL_ROOTPW=
