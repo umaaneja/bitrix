@@ -290,32 +290,38 @@ pre_php() {
 }
 
 configure_remi() {
-    EPEL=$(rpm -qa | grep -c 'remi-release')
-    if [[ $EPEL -gt 0 ]]; then
+    REMI=$(dnf list installed | grep -c 'remi-release')
+    if [[ $REMI -gt 0 ]]; then
         print "$MBE0026" 1
         return 0
     fi
 
     print "$MBE0027" 1
 
-    GPGK="http://rpms.famillecollet.com/RPM-GPG-KEY-remi"
-    if [[ $VER -eq 6 ]]; then
-        LINK="http://rpms.famillecollet.com/enterprise/remi-release-6.rpm"
-    elif [[ $VER -eq 7 ]]; then
-        LINK="http://rpms.famillecollet.com/enterprise/remi-release-7.rpm"
-    elif [[ $VER -eq 8 ]]; then
-        LINK="http://rpms.famillecollet.com/enterprise/remi-release-8.rpm"
+    # Determine CentOS version and set repository URLs
+    if [[ $VER -eq 8 ]]; then
+        LINK="https://rpms.remirepo.net/enterprise/remi-release-8.rpm"
+        GPGK="https://rpms.remirepo.net/RPM-GPG-KEY-remi"
+    elif [[ $VER -eq 9 ]]; then
+        LINK="https://rpms.remirepo.net/enterprise/remi-release-9.rpm"
+        GPGK="https://rpms.remirepo.net/RPM-GPG-KEY-remi"
     else
         print_e "Unsupported CentOS version $VER detected."
     fi
 
+    dnf install -y "$LINK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0029 $LINK"
+
     rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1 || \
         print_e "$MBE0028 $GPGK"
-    rpm -Uvh "$LINK" >>"$LOGS_FILE" 2>&1 || \
-        print_e "$MBE0029 $LINK"
+
+    dnf config-manager --set-enabled remi >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0079 Remi"
 
     print "$MBE0030" 1
 }
+
+
 
 configure_percona() {
     REPOTEST=$(rpm -qa | grep -c 'percona-release')
