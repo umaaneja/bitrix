@@ -195,7 +195,40 @@ disable_selinux() {
     fi
 }
 
+
 configure_epel() {
+    EPEL=$(dnf list installed | grep -c 'epel-release')
+    if [[ $EPEL -gt 0 ]]; then
+        print "$MBE0017" 1
+        return 0
+    fi
+
+    print "$MBE0018" 1
+
+    # Determine CentOS version
+    if [[ $VER -eq 8 ]]; then
+        LINK="https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm"
+        GPGK="https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-8"
+    elif [[ $VER -eq 9 ]]; then
+        LINK="https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm"
+        GPGK="https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-9"
+    else
+        print_e "Unsupported CentOS version $VER detected."
+    fi
+
+    dnf install -y "$LINK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0020 $LINK"
+
+    rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0019 $GPGK"
+
+    dnf config-manager --set-enabled PowerTools >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0079 EPEL"
+
+    print "$MBE0021" 1
+}
+
+configure_epel_delete() {
     EPEL=$(rpm -qa | grep -c 'epel-release')
     if [[ $EPEL -gt 0 ]]; then
         print "$MBE0017" 1
