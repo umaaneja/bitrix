@@ -465,9 +465,9 @@ configure_bitrix_old() {
 
 
 yum_update() {
-    print "$MBE0042" 1
-    yum -y update >>"$LOGS_FILE" 2>&1 || \
-        print_e "$MBE0043"
+  print "$MBE0042" 1
+  dnf upgrade -y >>"$LOGS_FILE" 2>&1 || \
+    print_e "$MBE0043"
 }
 
 ask_for_password() {
