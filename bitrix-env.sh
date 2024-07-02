@@ -431,21 +431,26 @@ configure_bitrix() {
     test_bitrix || return 1
 
     print "$MBE0039" 1
+
+    # Import Bitrix GPG key
     GPGK="https://repo.bitrix.info/yum/RPM-GPG-KEY-BitrixEnv"
-    rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1 || \
+    rpm --import "$GPGK" >> "$LOGS_FILE" 2>&1 || \
         print_e "$MBE0040 $GPGK"
 
+    # Configure Bitrix repository
     REPOF=/etc/yum.repos.d/bitrix.repo
-    echo "[$REPONAME]" >$REPOF
-    echo "name=\$OS \$releasever - \$basearch" >>$REPOF
-    echo "failovermethod=priority" >>$REPOF
-    echo "baseurl=https://repo.bitrix.info/$REPO/el/$VER/\$basearch" >>$REPOF
-    echo "enabled=1" >>$REPOF
-    echo "gpgcheck=1" >>$REPOF
-    echo "gpgkey=$GPGK" >>$REPOF
+    echo "[$REPONAME]" > "$REPOF"
+    echo "name=\$OS \$releasever - \$basearch" >> "$REPOF"
+    echo "failovermethod=priority" >> "$REPOF"
+    echo "baseurl=https://repo.bitrix.info/$REPO/el/$VER/\$basearch" >> "$REPOF"
+    echo "enabled=1" >> "$REPOF"
+    echo "gpgcheck=1" >> "$REPOF"
+    echo "gpgkey=$GPGK" >> "$REPOF"
 
     print "$MBE0041" 1
 }
+
+
 
 yum_update() {
     print "$MBE0042" 1
