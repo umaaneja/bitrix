@@ -458,15 +458,38 @@ configure_bitrix_trsttt() {
 }
 
 configure_bitrix() {
-  test_bitrix || return 1
+    # Ensure Bitrix environment is correctly set up
+    test_bitrix || return 1
 
-  print "$MBE0039" 1
+    print "$MBE0039" 1
+    GPGK="https://repo.bitrix.info/yum/RPM-GPG-KEY-BitrixEnv"
 
-  # Use dnf for key import and repository configuration
-  sudo dnf config-manager --add-repo https://repo.bitrix.info/$REPO/el/7 >> "$LOGS_FILE" 2>&1 || \
-    print_e "$MBE0079 Bitrix repo"
+    # Import GPG key
+    if ! rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1; then
+        print_e "$MBE0040 $GPGK"
+        return 1
+    fi
 
-  print "$MBE0041" 1
+    REPOF=/etc/yum.repos.d/bitrix.repo
+
+    # Create the repo file
+    {
+        echo "[$REPONAME]"
+        echo "name=\$OS \$releasever - \$basearch"
+        echo "failovermethod=priority"
+        echo "baseurl=https://repo.bitrix.info/$REPO/el/7/\$basearch"
+        echo "enabled=1"
+        echo "gpgcheck=1"
+        echo "gpgkey=$GPGK"
+    } > "$REPOF"
+
+    # Verify the repo file was created successfully
+    if [[ $? -ne 0 ]]; then
+        print_e "Failed to create repo file $REPOF"
+        return 1
+    fi
+
+    print "$MBE0041" 1
 }
 
 configure_bitrix_old() {
