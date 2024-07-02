@@ -677,7 +677,6 @@ configure_epel
 configure_remi
 pre_php
 configure_percona
-configure_nodejs
 configure_bitrix
 
 prepare_percona_install
