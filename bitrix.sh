@@ -133,24 +133,26 @@ MBE0086="Select MySQL version: 5.7 or 8.0 (Version 5.7 is default).
 MBE0087="There is no support Percona Server 8.0 for Centos 6. Exit."
 }
 
-print(){
-    msg=$1
-    notice=${2:-0}
-    [[ ( $SILENT -eq 0 ) && ( $notice -eq 1 ) ]] && echo -e "${msg}"
-    [[ ( $SILENT -eq 0 ) && ( $notice -eq 2 ) ]] && echo -e "\e[1;31m${msg}\e[0m"
-    echo "$(date +"%FT%H:%M:%S"): $$ : $msg" >> $LOGS_FILE
+print() {
+    local msg=$1
+    local notice=${2:-0}
+    if [[ $SILENT -eq 0 && $notice -eq 1 ]]; then
+        echo -e "${msg}"
+    elif [[ $SILENT -eq 0 && $notice -eq 2 ]]; then
+        echo -e "\e[1;31m${msg}\e[0m"
+    fi
+    echo "$(date +"%FT%H:%M:%S") : $$ : $msg" >> "$LOGS_FILE"
 }
 
-print_e(){
-    msg_e=$1
+print_e() {
+    local msg_e=$1
     print "$msg_e" 2
     print "$MBE0001 $LOGS_FILE" 1
     exit 1
 }
 
-help_message(){
-
-    echo "
+help_message() {
+    cat << EOF
     Usage: $0 [-h] [-s] [-t] [-p [-H hostname]] [-M mysql_root_password] [-m 5.7|8.0]
          -p - $MBE0002
          -s - $MBE0003
@@ -165,203 +167,579 @@ help_message(){
          * $MBE0010
          $0 -s -p -H master1
          * $MBE0011
-         $0 -s -p -H master1 -M 'password' -m 8.0"
+         $0 -s -p -H master1 -M 'password' -m 8.0
+EOF
     exit
 }
 
-disable_selinux(){
-    sestatus_cmd=$(which sestatus 2>/dev/null)
-    [[ -z $sestatus_cmd ]] && print "$MBE0012" 1 && return
-    [[ -z $(which getenforce 2>/dev/null) ]] && print "$MBE0012" 1 && return
-    [[ -z $(which setenforce 2>/dev/null) ]] && print "$MBE0012" 1 && return
-    if [[ -n $sestatus_cmd ]]; then
-        sestatus=$($sestatus_cmd | awk '{print $3}')
-        if [[ -n $sestatus && $sestatus == "enabled" ]]; then
-            setenforce 0
-            print "$MBE0015" 1
-            sed -i "s/^SELINUX=.*/SELINUX=disabled/" /etc/selinux/config
-            print "$MBE0016" 1
-        fi
+disable_selinux() {
+    local sestatus_cmd=$(command -v sestatus 2>/dev/null)
+    [[ -z $sestatus_cmd ]] && return 0
+
+    local sestatus=$($sestatus_cmd | awk -F':' '/SELinux status:/{print $2}' | sed -e "s/\s\+//g")
+    local seconfigs="/etc/selinux/config /etc/sysconfig/selinux"
+    
+    if [[ $sestatus != "disabled" ]]; then
+        print "$MBE0012" 1
+        print "$MBE0013"
+        read -r -p "$MBE0014 " DISABLE
+        [[ -z $DISABLE ]] && DISABLE=y
+        [[ $(echo $DISABLE | grep -wci "y") -eq 0 ]] && print_e "Exit."
+        for seconfig in $seconfigs; do
+            [[ -f $seconfig ]] && \
+                sed -i "s/SELINUX=\(enforcing\|permissive\)/SELINUX=disabled/" $seconfig && \
+                print "$MBE0015 $seconfig." 1
+        done
+        print "$MBE0016" 1
+        exit
     fi
 }
 
-configure_epel(){
-    if [[ $(yum repolist | grep -c epel/) -eq 0 ]]; then
-        print "$MBE0018" 1
-        yum -y install epel-release || print_e "$MBE0020 epel-release"
-    else
+configure_epel() {
+    EPEL=$(rpm -qa | grep -c 'epel-release')
+    if [[ $EPEL -gt 0 ]]; then
         print "$MBE0017" 1
+        return 0
     fi
-    yum -y install yum-utils
+
+    print "$MBE0018" 1
+
+    # Determine CentOS version
+    if [[ $VER -eq 6 ]]; then
+        LINK="https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm"
+        GPGK="https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-6"
+    elif [[ $VER -eq 7 ]]; then
+        LINK="https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm"
+        GPGK="https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-7"
+    elif [[ $VER -eq 8 ]]; then
+        LINK="https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm"
+        GPGK="https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-8"
+    else
+        print_e "Unsupported CentOS version $VER detected."
+    fi
+
+    rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0019 $GPGK"
+    rpm -Uvh "$LINK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0020 $LINK"
+
+    yum clean all >/dev/null 2>&1
+    yum install -y yum-fastestmirror >/dev/null 2>&1
+
     print "$MBE0021" 1
 }
 
-configure_remi(){
-    if [[ $(yum repolist | grep -c remi/) -eq 0 ]]; then
-        print "$MBE0027" 1
-        yum -y install https://rpms.remirepo.net/enterprise/remi-release-9.rpm || print_e "$MBE0029 remi-release"
-    else
-        print "$MBE0026" 1
+pre_php() {
+    print "$MBE0022"
+
+    # Enable remi repository
+    sed -i -e '/\[remi\]/,/^\[/s/enabled=0/enabled=1/' /etc/yum.repos.d/remi.repo
+
+    # Disable older PHP versions in remi repository
+    sed -i -e '/\[remi-php56\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+    sed -i -e '/\[remi-php70\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+    sed -i -e '/\[remi-php71\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+    sed -i -e '/\[remi-php72\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+    sed -i -e '/\[remi-php73\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+    sed -i -e '/\[remi-php74\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+    sed -i -e '/\[remi-php80\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+    sed -i -e '/\[remi-php81\]/,/^\[/s/enabled=1/enabled=0/' /etc/yum.repos.d/remi.repo
+
+    # Enable PHP 8.1 in remi-php81 repository
+    sed -i -e '/\[remi-php81\]/,/^\[/s/enabled=0/enabled=1/' /etc/yum.repos.d/remi-php81.repo
+
+    # Remove php-pecl-xhprof if needed
+    if [[ $is_xhprof -gt 0 ]]; then
+        yum -y remove php-pecl-xhprof
     fi
-    print "$MBE0022" 1
-    yum-config-manager --enable remi
-    print "$MBE0023" 1
-    yum-config-manager --disable remi-php56
-    print "$MBE0024" 1
-    yum-config-manager --disable remi-php70
-    print "$MBE0025" 1
-    yum-config-manager --disable remi-php71
-    print "$MBE00251" 1
-    yum-config-manager --disable remi-php72
-    print "$MBE00252" 1
-    yum-config-manager --disable remi-php73
-    print "$MBE00253" 1
-    yum-config-manager --disable remi-php74
-    print "$MBE00254" 1
-    yum-config-manager --disable remi-php80
-    print "$MBE00255" 1
-    yum-config-manager --enable remi-php81
+
+    print "PHP repository configuration completed." 1
+}
+
+configure_remi() {
+    EPEL=$(rpm -qa | grep -c 'remi-release')
+    if [[ $EPEL -gt 0 ]]; then
+        print "$MBE0026" 1
+        return 0
+    fi
+
+    print "$MBE0027" 1
+
+    GPGK="http://rpms.famillecollet.com/RPM-GPG-KEY-remi"
+    if [[ $VER -eq 6 ]]; then
+        LINK="http://rpms.famillecollet.com/enterprise/remi-release-6.rpm"
+    elif [[ $VER -eq 7 ]]; then
+        LINK="http://rpms.famillecollet.com/enterprise/remi-release-7.rpm"
+    elif [[ $VER -eq 8 ]]; then
+        LINK="http://rpms.famillecollet.com/enterprise/remi-release-8.rpm"
+    else
+        print_e "Unsupported CentOS version $VER detected."
+    fi
+
+    rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0028 $GPGK"
+    rpm -Uvh "$LINK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0029 $LINK"
+
     print "$MBE0030" 1
 }
 
-configure_percona(){
-    if [[ $(yum repolist | grep -c percona/) -eq 0 ]]; then
-        print "$MBE0018" 1
-        yum -y install https://repo.percona.com/yum/percona-release-latest.noarch.rpm || print_e "$MBE0032 percona-release"
-        print "$MBE0033" 1
-    else
+configure_percona() {
+    REPOTEST=$(rpm -qa | grep -c 'percona-release')
+    if [[ $REPOTEST -gt 0 ]]; then
         print "$MBE0031" 1
+        return 0
+    fi
+
+    print "Configuring Percona repository." 1
+
+    LINK="http://repo.percona.com/release/percona-release-latest.noarch.rpm"
+    rpm -Uvh "$LINK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0032 $LINK"
+
+    yum -y --nogpg update percona-release >>"$LOGS_FILE" 2>&1
+    which percona-release >>"$LOGS_FILE" 2>&1
+
+    print "$MBE0033" 1
+
+    if [[ $MYVERSION == "8.0" || $MYVERSION == "80" ]]; then
+        percona-release enable ps-80 release >>"$LOGS_FILE" 2>&1
+    else
+        percona-release setup -y ps57 >>"$LOGS_FILE" 2>&1
     fi
 }
 
-configure_bitrix(){
-    if [[ $(yum repolist | grep -c bitrix/) -eq 0 ]]; then
-        print "$MBE0039" 1
-        yum -y install http://repos.1c-bitrix.ru/yum/bitrix-env-release-9.noarch.rpm || print_e "$MBE0041 bitrix-env-release"
+configure_nodejs() {
+    curl --silent --location https://rpm.nodesource.com/setup_16.x | bash - >/dev/null 2>&1
+    yum -y install nodejs >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0079 nodejs"
+}
+
+prepare_percona_install() {
+    INSTALLED_PACKAGES=$(rpm -qa)
+
+    # Remove MariaDB packages if installed
+    if [[ $(echo "$INSTALLED_PACKAGES" | grep -c "mariadb") -gt 0 ]]; then
+        MARIADB_PACKAGES=$(echo "$INSTALLED_PACKAGES" | grep "mariadb")
+        if [[ $(echo "$MARIADB_PACKAGES" | grep -vc "mariadb-libs") -gt 0 ]]; then
+            print "$MBE0034"
+        else
+            yum -y remove mariadb-libs >/dev/null 2>&1
+            print "$MBE0035"
+        fi
+    fi
+
+    # Remove MySQL packages if installed
+    if [[ $(echo "$INSTALLED_PACKAGES" | grep -c "mysql") -gt 0 ]]; then
+        MYSQL_PACKAGES=$(echo "$INSTALLED_PACKAGES" | grep "mysql-libs")
+        if [[ $(echo "$MYSQL_PACKAGES" | grep -vc "mysql-libs") -gt 0 ]]; then
+            print "$MBE0036"
+        else
+            yum -y remove mysql-libs >/dev/null 2>&1
+            print "$MBE0037"
+        fi
+    fi
+}
+
+configure_exclude() {
+    if [[ $(grep -c "exclude" /etc/yum.conf) -gt 0 ]]; then
+        sed -i \
+            's/^exclude=.\+/exclude=ansible1.9,mysql,mariadb,mariadb-*,Percona-XtraDB-*,Percona-*-55,Percona-*-56,Percona-*-51,Percona-*-50/' \
+            /etc/yum.conf
     else
+        echo 'exclude=ansible1.9,mysql,mariadb,mariadb-*,Percona-XtraDB-*,Percona-*-55,Percona-*-56,Percona-*-51,Percona-*-50' >> /etc/yum.conf
+    fi
+
+    if [[ $(grep -v '^$\|^#' /etc/yum.conf | grep -c "installonly_limit") -eq 0 ]]; then
+        echo "installonly_limit=3" >> /etc/yum.conf
+    else
+        if [[ $(grep -v '^$\|^#' /etc/yum.conf | grep -c "installonly_limit=5") -gt 0 ]]; then
+            sed -i "s/installonly_limit=5/installonly_limit=3/" /etc/yum.conf
+        fi
+    fi
+}
+
+test_bitrix() {
+    if [[ $TEST_REPOSITORY -eq 1 ]]; then
+        REPO=yum-beta 
+        REPONAME=bitrix-beta
+    elif [[ $TEST_REPOSITORY -eq 2 ]]; then
+        REPO=yum-testing
+        REPONAME=bitrix-testing
+    else
+        REPO=yum
+        REPONAME=bitrix
+    fi
+
+    IS_BITRIX_REPO=$(yum repolist enabled | grep "^$REPONAME" -c)
+    if [[ $IS_BITRIX_REPO -gt 0 ]]; then
         print "$MBE0038" 1
+
+        REPO_INSTALLED=$(grep -v '^$\|^#' /etc/yum.repos.d/bitrix.repo | awk -F'=' '/baseurl=/{print $2}' | awk -F'/' '{print $4}')
+
+        if [[ "$REPO_INSTALLED" != "$REPO" ]]; then
+            print "$MBE0038" 1
+            return 1
+        fi
     fi
+
+    return 0
 }
 
-install_packages(){
+configure_bitrix() {
+    test_bitrix || return 1
+
+    print "$MBE0039" 1
+    GPGK="https://repo.bitrix.info/yum/RPM-GPG-KEY-BitrixEnv"
+    rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0040 $GPGK"
+
+    REPOF=/etc/yum.repos.d/bitrix.repo
+    echo "[$REPONAME]" >$REPOF
+    echo "name=\$OS \$releasever - \$basearch" >>$REPOF
+    echo "failovermethod=priority" >>$REPOF
+    echo "baseurl=https://repo.bitrix.info/$REPO/el/$VER/\$basearch" >>$REPOF
+    echo "enabled=1" >>$REPOF
+    echo "gpgcheck=1" >>$REPOF
+    echo "gpgkey=$GPGK" >>$REPOF
+
+    print "$MBE0041" 1
+}
+
+yum_update() {
     print "$MBE0042" 1
-    yum -y update || print_e "$MBE0043"
-    print "$MBE0076" 1
-    yum -y install php php-mysqlnd php-pdo php-gd php-mbstring php-mcrypt php-xml php-pecl-zip php-bcmath php-json php-pecl-redis5 php-opcache php-intl php-soap php-tidy php-pecl-memcache php-pecl-memcached
-    print "$MBE0077" 1
-    yum -y install $BX_PACKAGE
-    print "$MBE0078" 1
-    yum -y install bx-push-server
+    yum -y update >>"$LOGS_FILE" 2>&1 || \
+        print_e "$MBE0043"
 }
 
-configure_mysql(){
-    if [[ $MYVERSION == "5.7" ]]; then
-        percona_server_version="Percona-Server-server-57"
-    else
-        percona_server_version="Percona-Server-server-80"
-    fi
-    if [[ $(rpm -qa | grep -c $percona_server_version) -eq 0 ]]; then
-        print "Installing $percona_server_version. Please wait."
-        yum -y install $percona_server_version || print_e "$MBE0079 $percona_server_version"
-    fi
-}
+ask_for_password() {
+    MYSQL_ROOTPW=
+    limit=5
+    until [[ -n "$MYSQL_ROOTPW" ]]; do
+        password_check=
 
-configure_firewall(){
-    if [[ $CONFIGURE_IPTABLES -eq 1 ]]; then
-        if [[ $(systemctl is-active iptables) != "active" ]]; then
-            print "Starting iptables service."
-            systemctl start iptables
+        if [[ $limit -eq 0 ]]; then
+            print "$MBE0044"
+            return 1
         fi
-        if [[ $(systemctl is-enabled iptables) != "enabled" ]]; then
-            print "Enabling iptables service."
-            systemctl enable iptables
+        limit=$(( $limit - 1 ))
+
+        read -s -r -p "$MBE0045" MYSQL_ROOTPW
+        echo
+        read -s -r -p "$MBE0046" password_check
+        echo
+
+        if [[ ( -n "$MYSQL_ROOTPW" ) && ( "$MYSQL_ROOTPW" = "$password_check" ) ]]; then
+            :
+        else
+            [[ "$MYSQL_ROOTPW" != "$password_check" ]] && \
+                print "$MBE0047"
+
+            [[ -z "$MYSQL_ROOTPW" ]] && \
+                print "$MBE0048"
+            MYSQL_ROOTPW=
         fi
-        iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-        iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-        service iptables save || print_e "$MBE0080"
-    fi
-
-    if [[ $CONFIGURE_FIREWALLD -eq 1 ]]; then
-        if [[ $(systemctl is-active firewalld) != "active" ]]; then
-            print "Starting firewalld service."
-            systemctl start firewalld
-        fi
-        if [[ $(systemctl is-enabled firewalld) != "enabled" ]]; then
-            print "Enabling firewalld service."
-            systemctl enable firewalld
-        fi
-        firewall-cmd --permanent --add-service=http
-        firewall-cmd --permanent --add-service=https
-        firewall-cmd --reload
-    fi
-    print "$MBE0082" 1
-}
-
-create_pool(){
-    if [[ $POOL -eq 1 ]]; then
-        [[ -n $HOSTNAME ]] && hostnamectl set-hostname $HOSTNAME
-        /opt/webdir/bin/bx-sites -a create_pool -H $HOSTNAME -P $MYSQL_ROOT_PASSWORD > /dev/null 2>&1
-        [[ $? -ne 0 ]] && print_e "$MBE0083 $LOGS_FILE"
-        print "$MBE0084" 1
-    fi
-}
-
-main(){
-    bitrix_env_vars
-
-    while getopts "hspH:M:m:tIF" opt; do
-        case ${opt} in
-            h )
-                help_message
-                ;;
-            s )
-                SILENT=1
-                ;;
-            p )
-                POOL=1
-                ;;
-            H )
-                HOSTNAME=$OPTARG
-                ;;
-            M )
-                MYSQL_ROOT_PASSWORD=$OPTARG
-                ;;
-            m )
-                MYVERSION=$OPTARG
-                ;;
-            t )
-                TEST_REPOSITORY=1
-                ;;
-            I )
-                CONFIGURE_IPTABLES=1
-                CONFIGURE_FIREWALLD=0
-                ;;
-            F )
-                CONFIGURE_IPTABLES=0
-                CONFIGURE_FIREWALLD=1
-                ;;
-            \? )
-                help_message
-                ;;
-        esac
     done
-    shift $((OPTIND -1))
-
-    [[ $EUID -ne 0 ]] && print_e "$MBE0069"
-    [[ $OS != "CentOS" ]] && print_e "$MBE0070"
-
-    disable_selinux
-    configure_epel
-    configure_remi
-    configure_percona
-    configure_bitrix
-    install_packages
-    configure_mysql
-    configure_firewall
-    create_pool
-
-    print "$MBE0085" 1
-    exit 0
 }
 
-main "$@"
+update_mysql_rootpw() {
+    esc_pass=$(basic_single_escape "$MYSQL_ROOTPW")
+    
+    if [[ $MYSQL_UNI_VERSION -ge 57 ]]; then
+        my_query "ALTER USER 'root'@'localhost' IDENTIFIED BY '$esc_pass';" \
+            "$mysql_update_config"
+        my_query_rtn=$?
+    else
+        my_query \
+            "UPDATE mysql.user SET Password=PASSWORD('$esc_pass') WHERE User='root'; FLUSH PRIVILEGES;" \
+            "$mysql_update_config"
+        my_query_rtn=$?
+    fi
+
+    if [[ $my_query_rtn -eq 0 ]]; then
+        log_to_file "$MBE0048"
+        print "$MBE0049" 1
+        rm -f "$mysql_update_config"
+    else
+        log_to_file "$MBE0050"
+        rm -f "$mysql_update_config"
+        return 1
+    fi
+
+    my_config
+    log_to_file "$MBE0051 $MYSQL_CNF"
+    print "$MBE0051 $MYSQL_CNF" 1
+}
+
+configure_mysql_passwords() {
+    [[ -z $MYSQL_VERSION ]] && get_mysql_package
+
+    my_start
+
+    log_to_file "$MBE0052 $MYSQL_VERSION($MYSQL_UNI_VERSION)"
+
+    ASK_USER_FOR_PASSWORD=0
+
+    if [[ ! -f $MYSQL_CNF ]]; then
+        log_to_file "$MBE0053 $MYSQL_CNF"
+
+        if [[ $MYSQL_UNI_VERSION -ge 57 ]]; then
+            MYSQL_LOG_FILE=/var/log/mysqld.log
+            MYSQL_ROOTPW=$(grep 'temporary password' $MYSQL_LOG_FILE | awk '{print $NF}')
+            MYSQL_ROOTPW_TYPE=temporary
+        else
+            MYSQL_ROOTPW=
+            MYSQL_ROOTPW_TYPE=empty
+        fi
+
+        local my_temp=$MYSQL_CNF.temp
+        my_config "$my_temp"
+        my_query "status;" "$my_temp"
+        my_query_rtn=$?
+
+        if [[ $my_query_rtn -gt 0 ]]; then
+            if [[ $MYSQL_ROOTPW_TYPE == "temporary" ]]; then
+                log_to_file "$MBE0055"
+            else
+                log_to_file "$MBE0054"
+            fi
+            ASK_USER_FOR_PASSWORD=1
+            mysql_update_config=
+        else
+            ASK_USER_FOR_PASSWORD=2
+            mysql_update_config=$my_temp
+        fi
+
+    else
+        MYSQL_ROOTPW_TYPE=saved
+        log_to_file "$MBE0056 $MYSQL_CNF"
+
+        my_query "status;"
+        my_query_rtn=$?
+
+        if [[ $my_query_rtn -gt 0 ]]; then
+            log_to_file "$MBE0063"
+            ASK_USER_FOR_PASSWORD=1
+            mysql_update_config=
+        else
+            test_empty_password=$(grep -v '^$\|^#' $MYSQL_CNF | grep password | awk -F'=' '{print $2}' | sed -e "s/^\s\+//;s/\s\+$//")
+            if [[ ( -z $test_empty_password ) || ( $test_empty_password == '""' ) || ( $test_empty_password == "''" ) ]]; then
+                ASK_USER_FOR_PASSWORD=2
+                cp -f $MYSQL_CNF $MYSQL_CNF.temp
+                mysql_update_config=$MYSQL_CNF.temp
+            fi
+        fi
+    fi
+
+    if [[ $ASK_USER_FOR_PASSWORD -eq 1 ]]; then
+        if [[ $MYSQL_ROOTPW_TYPE == "temporary" ]]; then
+            log_to_file "$MBE0055"
+            [[ $SILENT -eq 0 ]] && print "$MBE0055" 2
+        else
+            log_to_file "$MBE0054"
+            [[ $SILENT -eq 0 ]] && print "$MBE0054" 2
+        fi
+
+        if [[ $SILENT -eq 0 ]]; then
+            read -r -p "$MBE0057" user_answer
+            [[ $(echo "$user_answer" | grep -wci "\(No\|n\)" ) -gt 0 ]] && return 1
+
+            ask_for_password
+            [[ $? -gt 0 ]] && return 2
+        else
+            if [[ -n "$MYPASSWORD" ]]; then
+                MYSQL_ROOTPW="${MYPASSWORD}"
+            else
+                log_to_file "$MBE0058"
+                return 1
+            fi
+        fi
+
+        my_config
+        print "$MBE0059" 1
+
+    elif [[ $ASK_USER_FOR_PASSWORD -eq 2 ]]; then
+        log_to_file "$MBE0063"
+
+        if [[ $SILENT -eq 0 ]]; then
+            read -r -p "$MBE0064" user_answer
+            [[ $(echo "$user_answer" | grep -wci "\(No\|n\)" ) -gt 0 ]] && return 1
+
+            ask_for_password
+            [[ $? -gt 0 ]] && return 2
+        else
+            if [[ -n "$MYPASSWORD" ]]; then
+                MYSQL_ROOTPW="${MYPASSWORD}"
+            else
+                MYSQL_ROOTPW="$(randpw)"
+            fi
+        fi
+
+        update_mysql_rootpw
+
+    else
+        log_to_file "$MBE0065"
+
+        if [[ -n "${MYPASSWORD}" ]]; then
+            MYSQL_ROOTPW="${MYPASSWORD}"
+            update_mysql_rootpw
+        else
+            if [[ ( $SILENT -eq 0 ) && ( $MYSQL_UNI_VERSION -ge 57 ) ]]; then
+                print "$MBE0066" 1
+                print "$MBE0067" 2
+            fi
+        fi
+    fi
+
+    my_additional_security
+    log_to_file "$MBE0068"
+    print "$MBE0068" 1
+}
+
+os_version(){
+    RELEASE_FILE="/etc/os-release"
+    IS_CENTOS=$(grep -c 'CentOS' $RELEASE_FILE)
+    IS_X86_64=$(uname -p | grep -wc 'x86_64')
+
+    if [[ $IS_CENTOS -gt 0 ]]; then
+        VER=$(grep 'VERSION_ID' $RELEASE_FILE | awk -F '"' '{print $2}' | awk -F '.' '{print $1}')
+    else
+        print_e "Unsupported OS. This script is designed for CentOS."
+    fi
+
+    if [[ $BX_PACKAGE == "bitrix-env-crm" ]]; then
+        [[ $VER -eq 7 || $VER -eq 8 || $VER -eq 9 ]] || \
+            print_e "$MBE0075 $VER."
+    else
+        [[ $VER -eq 7 || $VER -eq 8 || $VER -eq 9 ]] || \
+            print_e "$MBE0075 $VER."
+    fi
+
+    if [[ $IS_X86_64 -eq 0 ]]; then
+        print_e "Unsupported architecture. This script requires x86_64 architecture."
+    fi
+}
+
+bitrix_env_vars
+
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+    print_e "$MBE0069"
+fi
+
+# Check if the operating system is CentOS
+if [[ ! -f /etc/os-release ]] || ! grep -qi 'centos' /etc/os-release; then
+    print_e "$MBE0070"
+fi
+
+os_version
+
+while getopts ":H:M:m:sptIFh" opt; do
+    case $opt in
+        "H") HOSTIDENT="${OPTARG}" ;;
+        "M") MYPASSWORD="${OPTARG}" ;;
+        "m") 
+            MYVERSION="${OPTARG}"
+            if [[ $VER == "6" && (  $MYVERSION == '8.0' || $MYVERSION == '80' ) ]]; then
+                print_e "$MBE0087"
+            fi
+            ;;
+        "s") SILENT=1 ;;
+        "p") POOL=1 ;;
+        "t") TEST_REPOSITORY=2 ;;
+        "I") CONFIGURE_IPTABLES=1 ; CONFIGURE_FIREWALLD=0 ;;
+        "F") CONFIGURE_IPTABLES=0 ; CONFIGURE_FIREWALLD=1 ;;
+        "h") help_message;;
+        *)  help_message;;
+    esac
+done
+
+if [[ $SILENT -eq 0 ]]; then
+    print "====================================================================" 2
+    print "$MBE0071" 2
+    print "$MBE0072" 2
+    print "$MBE0073" 2
+    print "$MBE0074" 2
+    print "====================================================================" 2
+
+    ASK_USER=1
+else
+    ASK_USER=0
+fi
+
+disable_selinux
+
+configure_exclude
+
+yum_update
+
+configure_epel
+configure_remi
+pre_php
+configure_percona
+configure_nodejs
+configure_bitrix
+
+prepare_percona_install
+
+yum_update
+
+print "$MBE0076" 1
+
+# Install PHP and related packages
+yum -y install php php-mysql php-pecl-apcu php-pecl-zendopcache >> "$LOGS_FILE" 2>&1 || \
+    { print_e "$MBE0079 php-packages"; exit 1; }
+
+# Install additional packages if BX_PACKAGE is "bitrix-env-crm"
+if [[ $BX_PACKAGE == "bitrix-env-crm" ]]; then
+    print "$MBE0078" 1
+    yum -y install redis >> "$LOGS_FILE" 2>&1 || \
+        { print_e "$MBE0079 redis"; exit 1; }
+    yum -y install bx-push-server >> "$LOGS_FILE" 2>&1 || \
+        { print_e "$MBE0079 bx-push-server"; exit 1; }
+fi
+
+# Install the main BX_PACKAGE
+print "$MBE0077" 1
+yum -y install $BX_PACKAGE >> "$LOGS_FILE" 2>&1 || \
+    { print_e "$MBE0079 $BX_PACKAGE"; exit 1; }
+
+# Source bitrix_utils.sh script
+. /opt/webdir/bin/bitrix_utils.sh || exit 1
+
+configure_mysql_passwords
+
+update_crypto_key
+
+configure_firewall_daemon "$CONFIGURE_IPTABLES" "$CONFIGURE_FIREWALLD"
+configure_firewall_daemon_rtn=$?
+
+if [[ $configure_firewall_daemon_rtn -eq 255 ]]; then
+    if [[ $BX_PACKAGE == "bitrix-env-crm" || $POOL -gt 0 ]]; then
+        print "$MBE0080" 2
+    else
+        print_e "$MBE0080"
+    fi
+elif [[ $configure_firewall_daemon_rtn -gt 0 ]]; then
+    if [[ $BX_PACKAGE == "bitrix-env-crm" || $POOL -gt 0 ]]; then
+        print "$MBE0081 $LOGS_FILE" 2
+    else
+        print_e "$MBE0081 $LOGS_FILE"
+    fi
+fi
+
+print "$MBE0082" 1
+
+if [[ $BX_PACKAGE == "bitrix-env-crm" || $POOL -gt 0 ]]; then
+    generate_ansible_inventory $ASK_USER "$BX_TYPE" "$HOSTIDENT" || \
+        { print_e "$MBE0083 $LOGS_FILE"; exit 1; }
+    print "$MBE0084" 1
+
+    if [[ $BX_PACKAGE == "bitrix-env-crm" ]]; then
+        generate_push
+    fi
+fi
+
+print "$MBE0085" 1
+
+[[ $TEST_REPOSITORY -eq 0 ]] && rm -f "$LOGS_FILE"
