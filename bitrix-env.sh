@@ -309,10 +309,12 @@ configure_percona() {
     fi
 }
 
+
+
 configure_nodejs() {
-    curl --silent --location https://rpm.nodesource.com/setup_16.x | bash - >/dev/null 2>&1
-    yum -y install nodejs >>"$LOGS_FILE" 2>&1 || \
-        print_e "$MBE0079 nodejs"
+  curl --silent --location https://rpm.nodesource.com/setup_current.x | bash - >/dev/null 2>&1
+  dnf install -y nodejs >>"$LOGS_FILE" 2>&1 || \
+    print_e "$MBE0079 nodejs"
 }
 
 prepare_percona_install() {
@@ -677,6 +679,7 @@ configure_epel
 configure_remi
 pre_php
 configure_percona
+configure_nodejs
 configure_bitrix
 
 prepare_percona_install
