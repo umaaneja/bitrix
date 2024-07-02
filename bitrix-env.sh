@@ -428,6 +428,18 @@ test_bitrix() {
 }
 
 configure_bitrix() {
+  test_bitrix || return 1
+
+  print "$MBE0039" 1
+
+  # Use dnf for key import and repository configuration
+  sudo dnf config-manager --add-repo https://repo.bitrix.info/$REPO/el/$VER >> "$LOGS_FILE" 2>&1 || \
+    print_e "$MBE0079 Bitrix repo"
+
+  print "$MBE0041" 1
+}
+
+configure_bitrix_old() {
     test_bitrix || return 1
 
     print "$MBE0039" 1
