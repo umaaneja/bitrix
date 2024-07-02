@@ -214,19 +214,37 @@ configure_epel() {
         GPGK="https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-9"
     else
         print_e "Unsupported CentOS version $VER detected."
+        return 1
     fi
 
-    dnf install -y "$LINK" >>"$LOGS_FILE" 2>&1 || \
+    # Download the RPM package
+    if ! curl -fLo /tmp/epel-release.rpm "$LINK"; then
+        print_e "Failed to download EPEL release package from $LINK"
+        return 1
+    fi
+
+    # Install the RPM package
+    if ! dnf install -y /tmp/epel-release.rpm >>"$LOGS_FILE" 2>&1; then
         print_e "$MBE0020 $LINK"
+        return 1
+    fi
 
-    rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1 || \
+    # Import the GPG key
+    if ! rpm --import "$GPGK" >>"$LOGS_FILE" 2>&1; then
         print_e "$MBE0019 $GPGK"
+        return 1
+    fi
 
-    dnf config-manager --set-enabled PowerTools >>"$LOGS_FILE" 2>&1 || \
+    # Enable PowerTools repository
+    if ! dnf config-manager --set-enabled crb >>"$LOGS_FILE" 2>&1; then
         print_e "$MBE0079 EPEL"
+        return 1
+    fi
 
     print "$MBE0021" 1
 }
+
+
 
 configure_epel_delete() {
     EPEL=$(rpm -qa | grep -c 'epel-release')
